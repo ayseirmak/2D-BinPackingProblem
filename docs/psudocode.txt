@@ -1,0 +1,235 @@
+INPUT:
+    Canvas C with width W and height H
+    Shape types T = {t1, t2, ..., tn}
+    Allowed rotations R[t] for each shape type
+    Numerical tolerance EPSILON
+
+OUTPUT:
+    Final non-overlapping layout L
+    Canvas utilisation
+    Wasted-space ratio
+
+
+PRECOMPUTE:
+    1. Validate that every input polygon is convex.
+    2. Generate and cache every rotated version of every shape.
+    3. Prepare pairwise NFP cache indexed by:
+           (fixed_shape_type,
+            fixed_rotation,
+            moving_shape_type,
+            moving_rotation)
+
+
+INITIALISE:
+    L ← empty layout
+    remaining_required ← set of all shape types T
+    used_area ← 0
+
+
+---------------------------------------------------
+PHASE 1: PLACE EVERY REQUIRED TYPE AT LEAST ONCE
+---------------------------------------------------
+
+WHILE remaining_required is not empty:
+
+    all_candidates ← empty list
+
+    FOR each shape type t in remaining_required, in fixed order:
+
+        FOR each allowed rotation angle θ in R[t], in fixed order:
+
+            moving_polygon ← rotated version of t at angle θ
+
+            IF L is empty:
+
+                # No NFP exists yet because there is no placed polygon.
+                candidate_positions ← corners of the Inner-Fit Polygon
+
+            ELSE:
+
+                candidate_positions ← GENERATE_NFP_CANDIDATES(
+                    layout=L,
+                    moving_polygon=moving_polygon,
+                    canvas=C
+                )
+
+            FOR each position (x, y) in candidate_positions:
+
+                candidate_polygon ← translate(
+                    moving_polygon,
+                    x,
+                    y
+                )
+
+                IF candidate_polygon is outside canvas:
+                    CONTINUE
+
+                IF candidate_polygon overlaps any polygon in L:
+                    CONTINUE
+
+                hypothetical_layout L' ← L + candidate_polygon
+
+                remaining_after ← remaining_required - {t}
+
+                # Hard future-feasibility check
+                mandatory_fit_counts ← empty dictionary
+                mandatory_still_possible ← TRUE
+
+                FOR each remaining type r in remaining_after:
+
+                    fit_count ← COUNT_FEASIBLE_PLACEMENTS(
+                        layout=L',
+                        shape_type=r,
+                        maximum_count=K
+                    )
+
+                    mandatory_fit_counts[r] ← fit_count
+
+                    IF fit_count = 0:
+                        mandatory_still_possible ← FALSE
+                        BREAK
+
+                IF mandatory_still_possible is FALSE:
+                    CONTINUE
+
+                metrics ← CALCULATE_METRICS(
+                    current_layout=L,
+                    hypothetical_layout=L',
+                    candidate_polygon=candidate_polygon,
+                    future_fit_counts=mandatory_fit_counts,
+                    canvas=C
+                )
+
+                score ← CALCULATE_SCORE(metrics)
+
+                ADD {
+                    shape_type: t,
+                    rotation: θ,
+                    position: (x, y),
+                    polygon: candidate_polygon,
+                    score: score
+                } TO all_candidates
+
+
+    IF all_candidates is empty:
+        RETURN FAILURE:
+            "This deterministic greedy path could not place
+             all mandatory shape types."
+
+
+    best_candidate ← candidate in all_candidates
+                     having maximum score
+
+    # Use deterministic tie-breaking:
+    # smaller max_y, then smaller max_x,
+    # then shape ID, rotation, x and y.
+
+    ADD best_candidate.polygon TO L
+    used_area ← used_area + area(best_candidate.polygon)
+    REMOVE best_candidate.shape_type FROM remaining_required
+
+
+---------------------------------------------------
+PHASE 2: REPEAT ANY SHAPE TYPE
+---------------------------------------------------
+
+WHILE TRUE:
+
+    all_candidates ← empty list
+
+    FOR each shape type t in T, in fixed order:
+
+        FOR each allowed rotation θ in R[t], in fixed order:
+
+            moving_polygon ← rotated version of t at angle θ
+
+            candidate_positions ← GENERATE_NFP_CANDIDATES(
+                layout=L,
+                moving_polygon=moving_polygon,
+                canvas=C
+            )
+
+            FOR each position (x, y) in candidate_positions:
+
+                candidate_polygon ← translated polygon
+
+                IF candidate is outside canvas:
+                    CONTINUE
+
+                IF candidate overlaps any placed polygon:
+                    CONTINUE
+
+                hypothetical_layout L' ← L + candidate_polygon
+
+                # No mandatory hard constraint remains.
+                # Future flexibility can optionally consider all types.
+                future_fit_counts ← COUNT_FEASIBLE_PLACEMENTS(
+                    layout=L',
+                    shape_types=T,
+                    maximum_count=K
+                )
+
+                metrics ← CALCULATE_METRICS(
+                    current_layout=L,
+                    hypothetical_layout=L',
+                    candidate_polygon=candidate_polygon,
+                    future_fit_counts=future_fit_counts,
+                    canvas=C
+                )
+
+                score ← CALCULATE_SCORE(metrics)
+
+                ADD candidate information TO all_candidates
+
+
+    IF all_candidates is empty:
+        BREAK
+
+    best_candidate ← candidate having maximum deterministic score
+
+    ADD best_candidate.polygon TO L
+    used_area ← used_area + area(best_candidate.polygon)
+
+
+---------------------------------------------------
+FINAL RESULT
+---------------------------------------------------
+
+canvas_utilisation ← used_area / area(C)
+wasted_space_ratio ← 1 - canvas_utilisation
+
+RETURN:
+    L,
+    canvas_utilisation,
+    wasted_space_ratio
+
+FUNCTION GENERATE_NFP_CANDIDATES(L, moving_polygon, C):
+
+    IFP ← calculate Inner-Fit Polygon of moving_polygon in C
+
+    candidates ← vertices of IFP
+    nfps ← empty list
+
+    FOR each placed polygon p in L:
+
+        nfp ← NFP(p, moving_polygon)
+        ADD nfp TO nfps
+
+        ADD vertices of nfp TO candidates
+
+        ADD intersections of:
+            nfp boundary × IFP boundary
+        TO candidates
+
+    FOR every pair (nfp_i, nfp_j):
+
+        ADD intersections of:
+            nfp_i boundary × nfp_j boundary
+        TO candidates
+
+    Remove duplicate candidate points using EPSILON
+
+    Remove points outside IFP
+
+    RETURN candidates
+

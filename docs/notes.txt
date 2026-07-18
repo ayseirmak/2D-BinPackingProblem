@@ -1,0 +1,73 @@
+lk deterministic sürüm için önerdiğim score
+
+Başlangıçta ağırlıklı ve karmaşık bir score yerine lexicographic score kullanmanı öneririm:
+
+score(candidate) = (
+    bounding_box_density,     MAXIMISE
+    canvas_utilisation,       MAXIMISE
+    future_flexibility,       MAXIMISE
+    contact_ratio,            MAXIMISE
+    -max_y,                   MAXIMISE = smaller max_y
+    -max_x,                   MAXIMISE = smaller max_x
+    -shape_type_order,
+    -rotation_order,
+    -x,
+    -y
+)
+
+Python tuple’ları lexicographic olarak karşılaştırabildiği için:
+
+score = (
+    round(bbox_density, 10),
+    round(canvas_utilisation, 10),
+    round(future_flexibility, 10),
+    round(contact_ratio, 10),
+    -round(max_y, 10),
+    -round(max_x, 10),
+    -shape_type_index,
+    -rotation_index,
+    -round(x, 10),
+    -round(y, 10),
+)
+
+ve seçim:
+
+best_candidate = max(
+    all_candidates,
+    key=lambda candidate: candidate.score
+)
+
+Böylece:
+
+Ana seçim kriteri her zaman bounding-box density olur.
+Density eşitse daha yüksek canvas utilization seçilir.
+O da eşitse daha fazla future placement seçeneği bırakılır.
+Sonra contact length değerlendirilir.
+Son olarak bottom-left ve tamamen deterministik tie-breaking uygulanır.
+Fragmentation konusunda önerim
+
+İlk sürümde şu üç maddeyi ayrı ayrı implement etme:
+
+Disconnected empty region sayısı
+Kapalı boşluk sayısı
+İnce boşluk miktarı
+
+Bunları doğru hesaplamak beklenenden zor olabilir ve static 2D packing’de disconnected region her zaman kötü değildir. İlk sürümde:
+
+bounding-box density,
+future flexibility,
+contact ratio
+
+birlikte yeterli bir fragmentation proxy’si sağlar.
+
+Sonraki sürümde istersen herhangi bir shape’in sığamadığı boş alanı raster/grid approximation ile hesaplayıp açık bir unusable_void_ratio ekleyebilirsin.
+
+Son bir ayrım: Step score’larını toplayıp final başarı ölçütü olarak kullanmamalısın. Score yalnızca sıradaki parçayı seçmek için kullanılan heuristic’tir. Nihai çözüm her zaman:
+
+Utilisation=
+20000
+total placed shape area
+	​
+
+
+ile değerlendirilmelidir.
