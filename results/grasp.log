@@ -1,0 +1,43 @@
+  [mandatory] rect_35x25       @     0  util=0.0437
+  [mandatory] square_25        @     0  util=0.0750
+  [mandatory] square_20        @     0  util=0.0950
+  [mandatory] eqtri_5          @     0  util=0.0955
+  [mandatory] trapezium_20_30  @     0  util=0.1205
+  [mandatory] isotri_20_25     @   180  util=0.1320
+  [mandatory] rect_30x15       @     0  util=0.1545
+  [mandatory] eqtri_30         @    60  util=0.1740
+  [mandatory] isotri_30_35     @   115  util=0.1977
+  [mandatory] eqtri_40         @    60  util=0.2323
+[trial   0] pool= 1  parts= 60  util=0.4414   <-- best
+/Users/aie/miniforge3/envs/tensorflow/lib/python3.8/site-packages/shapely/set_operations.py:419: RuntimeWarning: invalid value encountered in unary_union
+  return lib.unary_union(collections, **kwargs)
+[trial   1] pool= 5  parts= 60  util=0.3491
+[trial   2] pool= 5  parts= 60  util=0.4119
+[trial   3] pool= 5  parts= 60  util=0.4328
+[trial   4] pool= 5  parts= 60  util=0.4197
+[trial   5] pool= 5  parts= 60  util=0.3155
+[trial   6] pool= 5  parts= 60  util=0.3464
+[trial   7] pool= 5  parts= 60  util=0.3117
+/Users/aie/miniforge3/envs/tensorflow/lib/python3.8/site-packages/shapely/set_operations.py:419: RuntimeWarning: divide by zero encountered in unary_union
+  return lib.unary_union(collections, **kwargs)
+[trial   8] pool= 5  parts= 60  util=0.4414
+[trial   9] pool= 5  parts= 60  util=0.2923
+[trial  10] pool= 5  parts= 60  util=0.4203
+[trial  11] pool= 5  parts= 60  util=0.4283
+
+================ RESULT ================
+shapes placed      : 60
+canvas utilisation : 0.4414  (44.14%)
+wasted-space ratio : 0.5586  (55.86%)
+
+placed per type:
+  eqtri_30         x 1
+  eqtri_40         x 1
+  eqtri_5          x 45
+  isotri_20_25     x 2
+  isotri_30_35     x 1
+  rect_30x15       x 2
+  rect_35x25       x 4
+  square_20        x 2
+  square_25        x 1
+  trapezium_20_30  x 1

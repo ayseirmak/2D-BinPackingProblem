@@ -1,38 +1,71 @@
 """
-Deterministic greedy NFP packer (two-stage scoring).
+NFP packer: a greedy inner loop wrapped in a GRASP outer loop.
 
-Phase 1 : place every required type at least once (with a hard feasibility gate
-          so a mandatory shape is never stranded).
-Phase 2 : repeat any type until nothing fits.
+INNER LOOP (_run_once) - one construction pass:
+  Phase 1 : place every required type at least once.
+  Phase 2 : repeat any type until nothing fits.
+  Per step:
+    1. For every eligible (type, rotation), build the feasible candidate
+       translations from the forbidden-region union (see nfp_candidate).
+    2. Score each candidate with ONE objective: the bounding-box density of
+       the whole cluster after adding it (see metrics.cluster_density).
+    3. Commit one candidate (see below).
 
-Per step:
-  1. Generate every feasible candidate (forbidden-region union) for the eligible
-     types and score it with the CHEAP O(1) metrics.
-  2. Shortlist: global top-N by cheap score + per-type top-2 (so no type is
-     accidentally dropped).
-  3. For the shortlist only, run the EXPENSIVE stage: mandatory feasibility gate,
-     exact contact ratio, capped future flexibility -> full lexicographic score.
-  4. Place the best.
+OUTER LOOP (run_packing) - GRASP:
+  A single greedy pass samples exactly ONE point in the space of placement
+  sequences, and commits to its early decisions irrevocably. That is where the
+  loss concentrates: the first few large parts decide whether the rest fits.
+  Every competitive nesting solver spends its budget revisiting those early
+  decisions - by re-ordering (genetic algorithms, as in SVGnest/Deepnest), by
+  relaxing feasibility and repairing (guided local search, as in sparrow), or
+  by backtracking (tree search, as in PackingSolver).
+
+  GRASP is the cheapest member of that family and needs no new geometry: at
+  each step, instead of always taking the best candidate, pick uniformly at
+  random from the `pool` best ones (a restricted candidate list). Repeat the
+  whole construction `trials` times from different seeds and keep the best
+  layout. Trial 0 always runs with pool=1, i.e. the plain deterministic greedy,
+  so the result can never be worse than the greedy baseline.
 """
+
+import random
 
 from shapely.geometry import box
 
 from src.layout import Layout, Placement
 from algo.nfp_candidate import candidate_translations_fast
-from algo.metrics import (
-    cheap_metrics,
-    contact_ratio,
-    count_feasible_placements,
-    future_flexibility,
-)
-
-GLOBAL_KEEP = 20
-PER_TYPE_KEEP = 2
+from algo.metrics import cluster_density
 
 
-def _cheap_score(m, shape_id, rot_index, x, y):
+def _score(m, shape_id, rot_index, x, y):
+    """
+    Lexicographic score, highest wins.
+
+    utilisation  - area packed so far, over the fixed canvas area. Since the
+                   already-placed area is constant within a step, this simply
+                   prefers the LARGEST part that still fits.
+    max_y, max_x - bottom-left bias. utilisation is identical for every
+                   position of the same part, so these actually choose the
+                   position: as low, then as far left, as possible.
+    the rest     - pure tie-breakers so a run is reproducible.
+
+    Together this is first-fit-decreasing + bottom-left-fill, a long-standing
+    packing heuristic: take the biggest piece that fits, push it into the
+    bottom-left corner.
+
+    Bounding-box density (A_used / bbox_area) was the objective before, and it
+    was measured to be actively harmful here: a small part never grows the
+    cluster's bounding box, so it ALWAYS raises density, while a large part
+    usually grows the box and so ALWAYS lowers it. The score therefore
+    systematically rewarded the smallest available part - a run would place 45
+    of the 10.8-area triangles (5.5% of the packed area) out of 60 parts.
+    Three separate attempts to fix the packing around that score - a richer
+    rotation set, a contact filter, and a GRASP outer loop - all converged to
+    the same utilisation, because each of them was following the same broken
+    compass. Density is still computed in metrics.cluster_density and is
+    reported, just not optimised for.
+    """
     return (
-        round(m["density"], 10),
         round(m["utilisation"], 10),
         -round(m["max_y"], 10),
         -round(m["max_x"], 10),
@@ -43,161 +76,96 @@ def _cheap_score(m, shape_id, rot_index, x, y):
     )
 
 
-def _generate_scored_candidates(layout, types_to_try, canvas):
-    """All feasible candidates with cheap score attached."""
-    records = []
+def _scored_candidates(layout, types_to_try, canvas):
+    """Every feasible placement of every eligible type, with its score."""
+    out = []
     for shape in types_to_try:
         for rot_index, angle in enumerate(shape.rotations):
             moving = shape.variants[angle]
-            for x, y, poly in candidate_translations_fast(layout, shape, angle, moving, canvas):
-                m = cheap_metrics(layout, poly)
-                records.append({
-                    "shape": shape, "angle": angle, "rot_index": rot_index,
-                    "x": x, "y": y, "poly": poly, "cheap": m,
-                    "cheap_score": _cheap_score(m, shape.id, rot_index, x, y),
-                })
-    return records
+            for x, y, poly in candidate_translations_fast(
+                layout, shape, angle, moving, canvas
+            ):
+                m = cluster_density(layout, poly)
+                out.append((
+                    _score(m, shape.id, rot_index, x, y),
+                    Placement(shape, angle, x, y, poly),
+                ))
+    return out
 
 
-def _shortlist(records):
-    """Global top-N by cheap score plus per-type top-2, de-duplicated."""
-    by_cheap = sorted(records, key=lambda r: r["cheap_score"], reverse=True)
-    keep = list(by_cheap[:GLOBAL_KEEP])
-
-    per_type = {}
-    for r in by_cheap:
-        sid = r["shape"].id
-        bucket = per_type.setdefault(sid, [])
-        if len(bucket) < PER_TYPE_KEEP:
-            bucket.append(r)
-            keep.append(r)
-
-    seen, unique = set(), []
-    for r in keep:
-        key = (r["shape"].id, r["angle"], round(r["x"], 8), round(r["y"], 8))
-        if key not in seen:
-            seen.add(key)
-            unique.append(r)
-    return unique
-
-
-def _passes_gate(layout, record, gate_types, canvas):
-    """Every still-required OTHER type must keep >=1 feasible placement on L'."""
-    l_prime = layout.added(Placement(
-        record["shape"], record["angle"], record["x"], record["y"], record["poly"]
-    ))
-    for r in gate_types:
-        if r.id == record["shape"].id:
-            continue
-        if count_feasible_placements(l_prime, r, canvas, 1) == 0:
-            return False
-    return record  # truthy; caller can reuse (we recompute l_prime lazily below)
-
-
-def _full_score(layout, record, flexibility_types, canvas, K):
-    m = record["cheap"]
-    l_prime = layout.added(Placement(
-        record["shape"], record["angle"], record["x"], record["y"], record["poly"]
-    ))
-    flex = future_flexibility(l_prime, flexibility_types, canvas, K)
-    contact = contact_ratio(record["poly"], layout.polygons, canvas)
-    return (
-        round(m["density"], 10),
-        round(m["utilisation"], 10),
-        round(flex, 10),
-        round(contact, 10),
-        -round(m["max_y"], 10),
-        -round(m["max_x"], 10),
-        -record["shape"].id,
-        -record["rot_index"],
-        -round(record["x"], 10),
-        -round(record["y"], 10),
-    )
-
-
-def _pick_best(layout, records, gate_types, flexibility_types, canvas, K, use_flexibility):
-    """Shortlist -> gate -> full score -> best record (or None)."""
-    shortlist = _shortlist(records)
-
-    scored = []
-    for r in shortlist:
-        if gate_types and not _passes_gate(layout, r, gate_types, canvas):
-            continue
-        if use_flexibility:
-            score = _full_score(layout, r, flexibility_types, canvas, K)
-        else:
-            score = _full_score(layout, r, [], canvas, K)  # flex neutral (=1.0)
-        scored.append((score, r))
-
-    # Fallback: if the whole shortlist failed the gate, scan the rest in cheap
-    # order until one passes (guarantees we don't give up prematurely).
-    if not scored and gate_types:
-        for r in sorted(records, key=lambda r: r["cheap_score"], reverse=True):
-            if _passes_gate(layout, r, gate_types, canvas):
-                scored.append((_full_score(layout, r, flexibility_types, canvas, K), r))
-                break
-
+def _pick(layout, types_to_try, canvas, rng, pool):
+    """Best candidate, or a random one from the `pool` best (GRASP)."""
+    scored = _scored_candidates(layout, types_to_try, canvas)
     if not scored:
         return None
-    return max(scored, key=lambda s: s[0])[1]
+    if pool <= 1:
+        return max(scored, key=lambda s: s[0])[1]
+    scored.sort(key=lambda s: s[0], reverse=True)
+    return rng.choice(scored[:pool])[1]
+
+
+def _run_once(shapes, canvas, canvas_width, canvas_height,
+              rng, pool, max_parts, verbose):
+    """One full construction pass. Returns the Layout."""
+    layout = Layout(canvas_width, canvas_height)
+
+    # ---------------- PHASE 1: every type at least once ---------------- #
+    remaining = list(shapes)
+    while remaining:
+        best = _pick(layout, remaining, canvas, rng, pool)
+        if best is None:
+            names = ", ".join(t.name for t in remaining)
+            raise RuntimeError(f"No feasible placement left for: {names}")
+        layout.add(best)
+        remaining = [t for t in remaining if t.id != best.shape_type.id]
+        if verbose:
+            print(f"  [mandatory] {best.shape_type.name:16s} @ {best.rotation:5.0f}  "
+                  f"util={layout.used_area / layout.canvas_area:.4f}")
+
+    # ---------------- PHASE 2: repetition until nothing fits ------------ #
+    while max_parts is None or len(layout.items) < max_parts:
+        best = _pick(layout, shapes, canvas, rng, pool)
+        if best is None:
+            break
+        layout.add(best)
+
+    return layout
 
 
 def run_packing(shapes, canvas_width=200.0, canvas_height=100.0,
-                K=10, use_flexibility=True, verbose=True,
-                checkpoint_every=0, checkpoint_fn=None,
-                initial_placements=None):
+                trials=1, pool=4, seed=0, max_parts=None,
+                verbose=True, checkpoint_every=0, checkpoint_fn=None):
+    """
+    Run `trials` GRASP constructions and return the best layout found.
+
+    trials=1 reproduces the plain deterministic greedy exactly.
+    """
     canvas = box(0, 0, canvas_width, canvas_height)
-    layout = Layout(canvas_width, canvas_height)
 
-    # Resume: replay previously saved placements. The algorithm is deterministic,
-    # so continuing from here yields exactly the same sequence as an unbroken run.
-    for placement in (initial_placements or []):
-        layout.add(placement)
-    if initial_placements and verbose:
-        print(f"[resume   ] restored {len(layout.items)} placements, "
-              f"util={layout.used_area / layout.canvas_area:.4f}")
+    best_layout = None
+    best_util = -1.0
 
-    def _checkpoint():
-        # Pure observability/persistence hook; does not affect selection.
-        if checkpoint_every and checkpoint_fn and len(layout.items) % checkpoint_every == 0:
-            checkpoint_fn(layout)
+    for trial in range(trials):
+        # Trial 0 is the deterministic greedy baseline; the rest are randomised.
+        trial_pool = 1 if trial == 0 else pool
+        rng = random.Random(seed + trial)
 
-    # ---------------- PHASE 1: mandatory ---------------- #
-    placed_ids = {p.shape_type.id for p in layout.items}
-    remaining = [t for t in shapes if t.id not in placed_ids]
-    while remaining:
-        records = _generate_scored_candidates(layout, remaining, canvas)
-        best = _pick_best(
-            layout, records,
-            gate_types=remaining, flexibility_types=remaining,
-            canvas=canvas, K=K, use_flexibility=use_flexibility,
+        layout = _run_once(
+            shapes, canvas, canvas_width, canvas_height,
+            rng, trial_pool, max_parts, verbose=(verbose and trial == 0),
         )
-        if best is None:
-            raise RuntimeError(
-                "Deterministic greedy path could not place all mandatory shapes."
-            )
-        layout.add(Placement(best["shape"], best["angle"], best["x"], best["y"], best["poly"]))
-        remaining = [t for t in remaining if t.id != best["shape"].id]
-        if verbose:
-            print(f"[mandatory] {best['shape'].name:16s} @ {best['angle']:5.0f}  "
-                  f"util={layout.used_area / layout.canvas_area:.4f}")
-        _checkpoint()
+        util = layout.used_area / layout.canvas_area
 
-    # ---------------- PHASE 2: repetition ---------------- #
-    while True:
-        records = _generate_scored_candidates(layout, shapes, canvas)
-        best = _pick_best(
-            layout, records,
-            gate_types=[], flexibility_types=shapes,
-            canvas=canvas, K=K, use_flexibility=use_flexibility,
-        )
-        if best is None:
-            break
-        layout.add(Placement(best["shape"], best["angle"], best["x"], best["y"], best["poly"]))
-        if verbose:
-            print(f"[repeat   ] {best['shape'].name:16s} @ {best['angle']:5.0f}  "
-                  f"util={layout.used_area / layout.canvas_area:.4f}")
-        _checkpoint()
+        improved = util > best_util
+        if improved:
+            best_layout, best_util = layout, util
+            # Pure observability hook; does not affect selection or scoring.
+            if checkpoint_fn:
+                checkpoint_fn(layout)
 
-    utilisation = layout.used_area / layout.canvas_area
-    return layout, utilisation, 1.0 - utilisation
+        if verbose:
+            print(f"[trial {trial:3d}] pool={trial_pool:2d}  "
+                  f"parts={len(layout.items):3d}  util={util:.4f}"
+                  f"{'   <-- best' if improved else ''}", flush=True)
+
+    return best_layout, best_util, 1.0 - best_util

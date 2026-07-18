@@ -9,11 +9,12 @@ the NFP-NFP contact vertices where two parts meet. Interior holes are kept:
 they are feasible pockets fully surrounded by forbidden region.
 """
 
-from shapely.affinity import translate
+from shapely import unary_union
 from shapely.geometry import Point, Polygon, MultiPolygon, LineString, MultiLineString, GeometryCollection
 
 from algo.IFP import rectangular_ifp
-from algo.nfp import EPSILON
+from algo.nfp import polygon_vertices, EPSILON
+from algo.nfp_cache import placed_nfp
 
 
 def add_geometry_vertices(points: set, geometry):
@@ -39,16 +40,11 @@ def add_geometry_vertices(points: set, geometry):
             add_geometry_vertices(points, part)
 
 
-def is_feasible(candidate: Polygon, layout, canvas) -> bool:
-    """
-    Inside the canvas (touching allowed) and non-overlapping with placed parts.
-
-    Only parts returned by the spatial index are tested; a part whose bounding
-    box misses the candidate cannot overlap it, so the result is unchanged.
-    """
+def is_feasible(candidate: Polygon, placed_polygons: list, canvas) -> bool:
+    """Inside the canvas (touching allowed) and non-overlapping with placed parts."""
     if not canvas.covers(candidate):
         return False
-    for placed in layout.nearby(candidate):
+    for placed in placed_polygons:
         if candidate.intersection(placed).area > EPSILON:
             return False
     return True
@@ -77,17 +73,23 @@ def candidate_translations_fast(
     # Canvas-contact candidates (corners / edges of the feasible region).
     add_geometry_vertices(points, ifp)
 
-    # Forbidden region = union of all placed NFPs (incrementally cached).
-    forbidden = layout.forbidden(moving_type, moving_rotation)
-    if forbidden is not None:
+    # Forbidden region = union of all placed NFPs.
+    if layout.items:
+        nfps = [
+            placed_nfp(placement, moving_type, moving_rotation)
+            for placement in layout.items
+        ]
+        forbidden = unary_union(nfps)
         # Clip to IFP: inserts NFP-IFP contact vertices and drops outside points.
-        add_geometry_vertices(points, forbidden.intersection(ifp))
+        forbidden_inside_ifp = forbidden.intersection(ifp)
+        add_geometry_vertices(points, forbidden_inside_ifp)
 
     # Materialise and feasibility-test each candidate point.
+    from shapely.affinity import translate
     results = []
     for x, y in points:
         candidate = translate(moving_polygon, xoff=x, yoff=y)
-        if is_feasible(candidate, layout, canvas):
+        if is_feasible(candidate, layout.polygons, canvas):
             results.append((x, y, candidate))
 
     results.sort(key=lambda r: (r[0], r[1]))   # deterministic order
