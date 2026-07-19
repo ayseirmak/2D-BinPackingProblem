@@ -4,3 +4,9 @@ __pycache__/
 .DS_Store
 .venv/
 venv/
+
+# transient run artifacts (kept locally, not committed)
+*_run.log
+results*/run*.log
+results*/DONE
+results*/layout.json.tmp
