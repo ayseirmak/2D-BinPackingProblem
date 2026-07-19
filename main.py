@@ -64,11 +64,18 @@ def main():
                              "(no gate, no flexibility, no bottom-left)")
     parser.add_argument("--mu", type=float, default=0.25,
                         help="contact weight for --simple mode (default 0.25)")
+    parser.add_argument("--edge", action="store_true",
+                        help="derive rotation from edge orientation (implies --simple, "
+                             "no preset rotations, no NFP)")
     args = parser.parse_args()
 
+    if args.edge:
+        args.simple = True          # edge mode uses the simplified contact score
+    rotation_mode = "edge" if args.edge else "preset"
+
     # Keep the modes in separate result folders / json files.
-    RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "results_simple" if args.simple else "results")
+    subdir = "results_edge" if args.edge else ("results_simple" if args.simple else "results")
+    RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), subdir)
     DONE_FILE = os.path.join(RESULTS_DIR, "DONE")
     PNG_PATH = os.path.join(RESULTS_DIR, "layout.png")
     layout_json = os.path.join(RESULTS_DIR, "layout.json")
@@ -80,6 +87,8 @@ def main():
         print(f"resuming from {layout_json} with {len(resumed)} placements")
     if args.simple:
         print(f"mode: SIMPLE (score = bbox_density + {args.mu} * contact_ratio)")
+    if args.edge:
+        print("rotation: EDGE-MATCHING (theta derived from frontier/candidate edges)")
 
     def checkpoint(layout):
         save_placements(layout, path=layout_json)     # cheap, every placement
@@ -98,6 +107,7 @@ def main():
         initial_placements=resumed,
         simple=args.simple,
         contact_weight=args.mu,
+        rotation_mode=rotation_mode,
     )
 
     save_placements(layout, path=layout_json)

@@ -19,6 +19,7 @@ from shapely.geometry import box
 
 from src.layout import Layout, Placement
 from algo.nfp_candidate import candidate_translations_fast
+from algo.edge_placement import derived_angles, frontier_edges, fresh_forbidden
 from algo.metrics import (
     cheap_metrics,
     contact_ratio,
@@ -43,19 +44,37 @@ def _cheap_score(m, shape_id, rot_index, x, y):
     )
 
 
-def _generate_scored_candidates(layout, types_to_try, canvas):
+def _generate_scored_candidates(layout, types_to_try, canvas, rotation_mode="preset"):
     """All feasible candidates with cheap score attached."""
     records = []
-    for shape in types_to_try:
-        for rot_index, angle in enumerate(shape.rotations):
-            moving = shape.variants[angle]
-            for x, y, poly in candidate_translations_fast(layout, shape, angle, moving, canvas):
-                m = cheap_metrics(layout, poly)
-                records.append({
-                    "shape": shape, "angle": angle, "rot_index": rot_index,
-                    "x": x, "y": y, "poly": poly, "cheap": m,
-                    "cheap_score": _cheap_score(m, shape.id, rot_index, x, y),
-                })
+
+    def add(shape, angle, rot_index, x, y, poly):
+        m = cheap_metrics(layout, poly)
+        records.append({
+            "shape": shape, "angle": angle, "rot_index": rot_index,
+            "x": x, "y": y, "poly": poly, "cheap": m,
+            "cheap_score": _cheap_score(m, shape.id, rot_index, x, y),
+        })
+
+    if rotation_mode == "edge":
+        # Rotation derived from edge orientation (no preset list); positions still
+        # come from the NFP search (kept for robustness).
+        frontiers = frontier_edges(layout, canvas)   # computed once, shared
+        for shape in types_to_try:
+            for angle in derived_angles(shape, frontiers):
+                variant = shape.variant(angle)
+                forbidden = fresh_forbidden(layout, shape, angle)
+                for x, y, poly in candidate_translations_fast(
+                        layout, shape, angle, variant, canvas, forbidden=forbidden):
+                    add(shape, angle, 0, x, y, poly)
+    else:
+        # Preset rotations + NFP candidate positions.
+        for shape in types_to_try:
+            for rot_index, angle in enumerate(shape.rotations):
+                moving = shape.variants[angle]
+                for x, y, poly in candidate_translations_fast(layout, shape, angle, moving, canvas):
+                    add(shape, angle, rot_index, x, y, poly)
+
     return records
 
 
@@ -186,7 +205,7 @@ def run_packing(shapes, canvas_width=200.0, canvas_height=100.0,
                 K=10, use_flexibility=True, verbose=True,
                 checkpoint_every=0, checkpoint_fn=None,
                 initial_placements=None,
-                simple=False, contact_weight=0.25):
+                simple=False, contact_weight=0.25, rotation_mode="preset"):
     canvas = box(0, 0, canvas_width, canvas_height)
     layout = Layout(canvas_width, canvas_height)
 
@@ -207,7 +226,7 @@ def run_packing(shapes, canvas_width=200.0, canvas_height=100.0,
     placed_ids = {p.shape_type.id for p in layout.items}
     remaining = [t for t in shapes if t.id not in placed_ids]
     while remaining:
-        records = _generate_scored_candidates(layout, remaining, canvas)
+        records = _generate_scored_candidates(layout, remaining, canvas, rotation_mode)
         best = _pick_best(
             layout, records,
             gate_types=remaining, flexibility_types=remaining,
@@ -227,7 +246,7 @@ def run_packing(shapes, canvas_width=200.0, canvas_height=100.0,
 
     # ---------------- PHASE 2: repetition ---------------- #
     while True:
-        records = _generate_scored_candidates(layout, shapes, canvas)
+        records = _generate_scored_candidates(layout, shapes, canvas, rotation_mode)
         best = _pick_best(
             layout, records,
             gate_types=[], flexibility_types=shapes,

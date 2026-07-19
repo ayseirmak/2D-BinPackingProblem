@@ -54,18 +54,26 @@ def is_feasible(candidate: Polygon, layout, canvas) -> bool:
     return True
 
 
+_UNSET = object()
+
+
 def candidate_translations_fast(
     layout,
     moving_type,
     moving_rotation,
     moving_polygon,
     canvas,
+    forbidden=_UNSET,
 ):
     """
     Return feasible placements [(x, y, polygon)] for the moving variant.
 
-    `layout`   : Layout object (cached).
-    `canvas`   : shapely box(0,0,W,H).
+    `layout`    : Layout object (cached).
+    `canvas`    : shapely box(0,0,W,H).
+    `forbidden` : optional precomputed forbidden region. Pass one for edge-derived
+                  (continuous) rotations so the persistent incremental cache - which
+                  only pays off for a fixed rotation set - is bypassed. Omit to use
+                  the cached region (preset rotations).
     """
     W, H = layout.canvas_width, layout.canvas_height
     ifp = rectangular_ifp(moving_polygon, W, H)
@@ -77,8 +85,9 @@ def candidate_translations_fast(
     # Canvas-contact candidates (corners / edges of the feasible region).
     add_geometry_vertices(points, ifp)
 
-    # Forbidden region = union of all placed NFPs (incrementally cached).
-    forbidden = layout.forbidden(moving_type, moving_rotation)
+    # Forbidden region = union of all placed NFPs.
+    if forbidden is _UNSET:
+        forbidden = layout.forbidden(moving_type, moving_rotation)
     if forbidden is not None:
         # Clip to IFP: inserts NFP-IFP contact vertices and drops outside points.
         add_geometry_vertices(points, forbidden.intersection(ifp))

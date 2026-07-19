@@ -20,8 +20,8 @@ def base_nfp(fixed_type, fixed_rotation, moving_type, moving_rotation):
     nfp = _BASE_NFP.get(key)
     if nfp is None:
         nfp = convex_nfp(
-            fixed_type.variants[fixed_rotation],
-            moving_type.variants[moving_rotation],
+            fixed_type.variant(fixed_rotation),
+            moving_type.variant(moving_rotation),
         )
         _BASE_NFP[key] = nfp
     return nfp

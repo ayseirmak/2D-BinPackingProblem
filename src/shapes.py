@@ -29,11 +29,23 @@ class ShapeType:
     def __post_init__(self):
         if not is_convex(self.base_polygon):
             raise ValueError(f"Shape '{self.name}' is not convex")
-        # Pre-compute (cache) every rotated version once.
+        # Pre-compute (cache) the preset rotations once.
         for angle in self.rotations:
             self.variants[angle] = create_rotated_local_polygon(
                 self.base_polygon, angle
             )
+
+    def variant(self, angle):
+        """
+        Canonical local polygon for an arbitrary angle, built and cached on
+        demand. Lets edge-derived (continuous) rotations reuse the same
+        machinery as the preset ones.
+        """
+        v = self.variants.get(angle)
+        if v is None:
+            v = create_rotated_local_polygon(self.base_polygon, angle)
+            self.variants[angle] = v
+        return v
 
     @property
     def area(self) -> float:
