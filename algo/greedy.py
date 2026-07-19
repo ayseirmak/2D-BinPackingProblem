@@ -94,6 +94,29 @@ def _passes_gate(layout, record, gate_types, canvas):
     return record  # truthy; caller can reuse (we recompute l_prime lazily below)
 
 
+def _simple_score(layout, record, canvas, contact_weight):
+    """
+    Simplified score: weighted sum of bounding-box density and contact ratio.
+
+        score = bbox_density + contact_weight * contact_ratio
+
+    No future flexibility, no fragmentation, no bottom-left bias. Rotation and
+    position are chosen purely by this score, so for each position the rotation
+    that maximises contact naturally wins. Contact is measured only against the
+    parts the spatial index says are adjacent (same result, much cheaper).
+    """
+    density = record["cheap"]["density"]
+    contact = contact_ratio(record["poly"], layout.nearby(record["poly"]), canvas)
+    return (
+        round(density + contact_weight * contact, 12),
+        # deterministic tie-break only (NOT a bottom-left preference):
+        -record["shape"].id,
+        -record["rot_index"],
+        -round(record["x"], 10),
+        -round(record["y"], 10),
+    )
+
+
 def _full_score(layout, record, flexibility_types, canvas, K):
     m = record["cheap"]
     l_prime = layout.added(Placement(
@@ -115,9 +138,26 @@ def _full_score(layout, record, flexibility_types, canvas, K):
     )
 
 
-def _pick_best(layout, records, gate_types, flexibility_types, canvas, K, use_flexibility):
+def _pick_best(layout, records, gate_types, flexibility_types, canvas, K,
+               use_flexibility, simple=False, contact_weight=0.25):
     """Shortlist -> gate -> full score -> best record (or None)."""
     shortlist = _shortlist(records)
+
+    # Simplified path: no gate, no flexibility, no fragmentation, and crucially
+    # NO hidden bottom-left bias from the shortlist. Because contact_ratio is in
+    # [0, 1], the contact term can shift the score by at most contact_weight, so a
+    # candidate whose density is more than contact_weight below the best can never
+    # win. We evaluate the exact score (with contact) for exactly those contenders
+    # and pick the max - this lets a higher-contact placement beat a lower one at
+    # equal density instead of being dropped for being higher up / less bottom-left.
+    if simple:
+        if not records:
+            return None
+        max_density = max(r["cheap"]["density"] for r in records)
+        contenders = [r for r in records
+                      if r["cheap"]["density"] >= max_density - contact_weight]
+        scored = [(_simple_score(layout, r, canvas, contact_weight), r) for r in contenders]
+        return max(scored, key=lambda s: s[0])[1]
 
     scored = []
     for r in shortlist:
@@ -145,7 +185,8 @@ def _pick_best(layout, records, gate_types, flexibility_types, canvas, K, use_fl
 def run_packing(shapes, canvas_width=200.0, canvas_height=100.0,
                 K=10, use_flexibility=True, verbose=True,
                 checkpoint_every=0, checkpoint_fn=None,
-                initial_placements=None):
+                initial_placements=None,
+                simple=False, contact_weight=0.25):
     canvas = box(0, 0, canvas_width, canvas_height)
     layout = Layout(canvas_width, canvas_height)
 
@@ -171,6 +212,7 @@ def run_packing(shapes, canvas_width=200.0, canvas_height=100.0,
             layout, records,
             gate_types=remaining, flexibility_types=remaining,
             canvas=canvas, K=K, use_flexibility=use_flexibility,
+            simple=simple, contact_weight=contact_weight,
         )
         if best is None:
             raise RuntimeError(
@@ -190,6 +232,7 @@ def run_packing(shapes, canvas_width=200.0, canvas_height=100.0,
             layout, records,
             gate_types=[], flexibility_types=shapes,
             canvas=canvas, K=K, use_flexibility=use_flexibility,
+            simple=simple, contact_weight=contact_weight,
         )
         if best is None:
             break

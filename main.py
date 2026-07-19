@@ -7,6 +7,7 @@ Usage:
 """
 
 import os
+import argparse
 
 import matplotlib
 matplotlib.use("Agg")
@@ -19,10 +20,12 @@ from src.persistence import save_placements, load_placements
 
 CANVAS_W = 200.0
 CANVAS_H = 100.0
+PNG_EVERY = 25          # redraw the picture every N placements (drawing is slow)
+
+# Filled in by main() from the CLI flags so the two modes never share files.
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 DONE_FILE = os.path.join(RESULTS_DIR, "DONE")
 PNG_PATH = os.path.join(RESULTS_DIR, "layout.png")
-PNG_EVERY = 25          # redraw the picture every N placements (drawing is slow)
 
 
 def plot_layout(layout, path=None):
@@ -53,14 +56,33 @@ def plot_layout(layout, path=None):
 
 
 def main():
+    global RESULTS_DIR, DONE_FILE, PNG_PATH
+
+    parser = argparse.ArgumentParser(description="Deterministic greedy NFP packer")
+    parser.add_argument("--simple", action="store_true",
+                        help="simplified score: bbox_density + mu*contact "
+                             "(no gate, no flexibility, no bottom-left)")
+    parser.add_argument("--mu", type=float, default=0.25,
+                        help="contact weight for --simple mode (default 0.25)")
+    args = parser.parse_args()
+
+    # Keep the modes in separate result folders / json files.
+    RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "results_simple" if args.simple else "results")
+    DONE_FILE = os.path.join(RESULTS_DIR, "DONE")
+    PNG_PATH = os.path.join(RESULTS_DIR, "layout.png")
+    layout_json = os.path.join(RESULTS_DIR, "layout.json")
+
     shapes = build_default_shapes()
 
-    resumed = load_placements(shapes)
+    resumed = load_placements(shapes, path=layout_json)
     if resumed:
-        print(f"resuming from results/layout.json with {len(resumed)} placements")
+        print(f"resuming from {layout_json} with {len(resumed)} placements")
+    if args.simple:
+        print(f"mode: SIMPLE (score = bbox_density + {args.mu} * contact_ratio)")
 
     def checkpoint(layout):
-        save_placements(layout)                       # cheap, every placement
+        save_placements(layout, path=layout_json)     # cheap, every placement
         if len(layout.items) % PNG_EVERY == 0:        # expensive, throttled
             plot_layout(layout)
 
@@ -74,9 +96,11 @@ def main():
         checkpoint_every=1,
         checkpoint_fn=checkpoint,
         initial_placements=resumed,
+        simple=args.simple,
+        contact_weight=args.mu,
     )
 
-    save_placements(layout)
+    save_placements(layout, path=layout_json)
     plot_layout(layout)
 
     print("\n================ RESULT ================")
